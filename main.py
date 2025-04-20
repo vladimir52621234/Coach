@@ -4,7 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from config import BOT_TOKEN, MAIN_KEYBOARD, EDIT_KEYBOARD, BACK_BUTTON
+from config import BOT_TOKEN, MAIN_KEYBOARD, EDIT_KEYBOARD, BACK_BUTTON, DAYS_OF_WEEK
 from logic import WorkoutStates, load_data, save_data, format_schedule
 
 ### --- Инициализация бота ---
@@ -16,7 +16,6 @@ dp = Dispatcher(storage=storage)
 
 ### --- Клавиатуры ---
 def get_main_kb():
-    """Клавиатура главного меню."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=btn)] for btn in MAIN_KEYBOARD],
         resize_keyboard=True
@@ -24,7 +23,6 @@ def get_main_kb():
 
 
 def get_edit_kb():
-    """Клавиатура меню редактирования."""
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=btn)] for btn in EDIT_KEYBOARD],
         resize_keyboard=True
@@ -32,9 +30,7 @@ def get_edit_kb():
 
 
 def get_days_kb():
-    """Клавиатура с днями недели."""
-    data = load_data()
-    buttons = [KeyboardButton(text=day) for day in data.keys()]
+    buttons = [KeyboardButton(text=day) for day in DAYS_OF_WEEK]
     buttons.append(KeyboardButton(text=BACK_BUTTON))
     return ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
 
@@ -42,32 +38,25 @@ def get_days_kb():
 ### --- Обработчики команд ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Обработчик команды /start."""
     await message.answer(
         "Привет! Это бот для планирования тренировок. Выбери действие:",
         reply_markup=get_main_kb()
     )
 
 
-### --- Показать график ---
 @dp.message(F.text == "📅 Показать график")
 async def show_schedule(message: types.Message):
-    """Показывает текущий график тренировок."""
-    data = load_data()
+    data = load_data(message.from_user.id)
     await message.answer(format_schedule(data), parse_mode="HTML")
 
 
-### --- Редактировать график ---
 @dp.message(F.text == "✏️ Редактировать график")
 async def edit_schedule_menu(message: types.Message):
-    """Меню редактирования графика."""
     await message.answer("Выберите действие:", reply_markup=get_edit_kb())
 
 
-### --- Назад в главное меню ---
 @dp.message(F.text == BACK_BUTTON)
 async def back_to_main_menu(message: types.Message, state: FSMContext):
-    """Возвращает в главное меню."""
     await state.clear()
     await message.answer("Главное меню:", reply_markup=get_main_kb())
 
@@ -75,59 +64,155 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
 ### --- Добавление упражнения ---
 @dp.message(F.text == "➕ Добавить упражнение")
 async def add_exercise_start(message: types.Message, state: FSMContext):
-    """Начало добавления упражнения."""
     await state.set_state(WorkoutStates.waiting_for_day)
-    await message.answer("Введите день недели:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Выберите день:", reply_markup=get_days_kb())
 
 
 @dp.message(WorkoutStates.waiting_for_day)
 async def add_exercise_day(message: types.Message, state: FSMContext):
-    """Получает день и запрашивает упражнение."""
+    if message.text not in DAYS_OF_WEEK:
+        await message.answer("❌ Выберите день из списка!")
+        return
+
     await state.update_data(day=message.text)
     await state.set_state(WorkoutStates.waiting_for_exercise)
-    await message.answer("Теперь введите упражнение:")
+    await message.answer("Введите упражнение:", reply_markup=types.ReplyKeyboardRemove())
 
 
 @dp.message(WorkoutStates.waiting_for_exercise)
 async def add_exercise_finish(message: types.Message, state: FSMContext):
-    """Сохраняет упражнение и завершает FSM."""
     data = await state.get_data()
     day = data["day"]
     exercise = message.text
 
-    workout_data = load_data()
+    workout_data = load_data(message.from_user.id)
     if day not in workout_data:
         workout_data[day] = []
-    workout_data[day].append(exercise)
-    save_data(workout_data)
+
+    workout_data[day].append({"name": exercise})
+    save_data(message.from_user.id, workout_data)
 
     await state.clear()
     await message.answer(f"✅ Упражнение добавлено в {day}!", reply_markup=get_main_kb())
 
 
+### --- Добавление веса к упражнению ---
+@dp.message(F.text == "✏️ Добавить вес")
+async def add_weight_start(message: types.Message, state: FSMContext):
+    workout_data = load_data(message.from_user.id)
+    if not workout_data:
+        await message.answer("График пуст. Сначала добавьте упражнения.")
+        return
+
+    buttons = [KeyboardButton(text=day) for day in workout_data.keys()]
+    buttons.append(KeyboardButton(text=BACK_BUTTON))
+
+    kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
+
+    await state.set_state(WorkoutStates.waiting_for_edit_day)
+    await message.answer("Выберите день для добавления веса:", reply_markup=kb)
+
+
+@dp.message(WorkoutStates.waiting_for_edit_day, F.text.in_(DAYS_OF_WEEK))
+async def add_weight_day(message: types.Message, state: FSMContext):
+    workout_data = load_data(message.from_user.id)
+    day = message.text
+
+    if day not in workout_data or not workout_data[day]:
+        await message.answer("❌ В этом дне нет упражнений!")
+        return
+
+    await state.update_data(day=day)
+    exercises = workout_data[day]
+
+    buttons = [KeyboardButton(text=str(i)) for i in range(1, len(exercises) + 1)]
+    buttons.append(KeyboardButton(text=BACK_BUTTON))
+
+    kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
+
+    response = f"Упражнения в {day}:\n"
+    for i, ex_data in enumerate(exercises, 1):
+        exercise = ex_data['name']
+        weight = ex_data.get('weight', '')
+        if weight:
+            response += f"{i}. {exercise} ({weight} кг)\n"
+        else:
+            response += f"{i}. {exercise}\n"
+
+    await state.set_state(WorkoutStates.waiting_for_edit_choice)
+    await message.answer(response + "\nВведите номер упражнения для добавления веса:", reply_markup=kb)
+
+
+@dp.message(WorkoutStates.waiting_for_edit_choice, F.text.regexp(r'^\d+$'))
+async def add_weight_exercise(message: types.Message, state: FSMContext):
+    num = int(message.text)
+    data = await state.get_data()
+    day = data["day"]
+
+    workout_data = load_data(message.from_user.id)
+    exercises = workout_data[day]
+
+    if num < 1 or num > len(exercises):
+        await message.answer("❌ Неверный номер!")
+        return
+
+    await state.update_data(exercise_num=num - 1)
+    await state.set_state(WorkoutStates.waiting_for_weight)
+    await message.answer("Введите вес (в кг):", reply_markup=types.ReplyKeyboardRemove())
+
+
+@dp.message(WorkoutStates.waiting_for_weight)
+async def add_weight_finish(message: types.Message, state: FSMContext):
+    try:
+        weight = float(message.text)
+        if weight <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректный вес (положительное число)!")
+        return
+
+    data = await state.get_data()
+    day = data["day"]
+    exercise_num = data["exercise_num"]
+
+    workout_data = load_data(message.from_user.id)
+    workout_data[day][exercise_num]['weight'] = f"{weight:.1f}".rstrip('0').rstrip('.')
+    save_data(message.from_user.id, workout_data)
+
+    exercise_name = workout_data[day][exercise_num]['name']
+    await state.clear()
+    await message.answer(
+        f"✅ Вес {weight} кг добавлен к упражнению '{exercise_name}' в {day}!",
+        reply_markup=get_main_kb()
+    )
+
+
 ### --- Удаление упражнения ---
 @dp.message(F.text == "🗑️ Удалить упражнение")
 async def remove_exercise_start(message: types.Message, state: FSMContext):
-    """Начало удаления упражнения."""
-    data = load_data()
-    if not data:
+    workout_data = load_data(message.from_user.id)
+    if not workout_data:
         await message.answer("График пуст. Нечего удалять.")
         return
 
+    buttons = [KeyboardButton(text=day) for day in workout_data.keys()]
+    buttons.append(KeyboardButton(text=BACK_BUTTON))
+
+    kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
+
     await state.set_state(WorkoutStates.waiting_for_edit_day)
-    await message.answer("Выберите день:", reply_markup=get_days_kb())
+    await message.answer("Выберите день для удаления:", reply_markup=kb)
 
 
 @dp.message(WorkoutStates.waiting_for_edit_day)
 async def remove_exercise_day(message: types.Message, state: FSMContext):
-    """Получает день и предлагает выбрать упражнение."""
     if message.text == BACK_BUTTON:
         await state.clear()
         return await edit_schedule_menu(message)
 
-    workout_data = load_data()
+    workout_data = load_data(message.from_user.id)
     if message.text not in workout_data:
-        await message.answer("Такого дня нет. Попробуйте снова.")
+        await message.answer("❌ Такого дня нет в графике!")
         return
 
     await state.update_data(day=message.text)
@@ -144,8 +229,13 @@ async def remove_exercise_day(message: types.Message, state: FSMContext):
     kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
 
     response = f"Упражнения в {message.text}:\n"
-    for i, ex in enumerate(exercises, 1):
-        response += f"{i}. {ex}\n"
+    for i, ex_data in enumerate(exercises, 1):
+        exercise = ex_data['name']
+        weight = ex_data.get('weight', '')
+        if weight:
+            response += f"{i}. {exercise} ({weight} кг)\n"
+        else:
+            response += f"{i}. {exercise}\n"
 
     await state.set_state(WorkoutStates.waiting_for_edit_choice)
     await message.answer(response + "\nВведите номер для удаления:", reply_markup=kb)
@@ -153,7 +243,6 @@ async def remove_exercise_day(message: types.Message, state: FSMContext):
 
 @dp.message(WorkoutStates.waiting_for_edit_choice)
 async def remove_exercise_finish(message: types.Message, state: FSMContext):
-    """Удаляет выбранное упражнение."""
     if message.text == BACK_BUTTON:
         await state.clear()
         return await edit_schedule_menu(message)
@@ -161,24 +250,24 @@ async def remove_exercise_finish(message: types.Message, state: FSMContext):
     try:
         num = int(message.text)
     except ValueError:
-        await message.answer("Введите номер упражнения!")
+        await message.answer("❌ Введите номер упражнения!")
         return
 
     data = await state.get_data()
     day = data["day"]
 
-    workout_data = load_data()
+    workout_data = load_data(message.from_user.id)
     exercises = workout_data[day]
 
     if num < 1 or num > len(exercises):
-        await message.answer("Неверный номер!")
+        await message.answer("❌ Неверный номер!")
         return
 
-    removed_ex = exercises.pop(num - 1)
+    removed_ex = exercises.pop(num - 1)['name']
     if not exercises:
         del workout_data[day]
 
-    save_data(workout_data)
+    save_data(message.from_user.id, workout_data)
     await state.clear()
     await message.answer(f"❌ Удалено: {removed_ex}", reply_markup=get_main_kb())
 
