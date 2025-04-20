@@ -2,10 +2,11 @@ import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from config import BOT_TOKEN, MAIN_KEYBOARD, EDIT_KEYBOARD, BACK_BUTTON, DAYS_OF_WEEK
-from logic import WorkoutStates, load_data, save_data, format_schedule
+from logic import load_data, save_data, format_schedule
 
 ### --- Инициализация бота ---
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,23 @@ def get_days_kb():
     buttons = [KeyboardButton(text=day) for day in DAYS_OF_WEEK]
     buttons.append(KeyboardButton(text=BACK_BUTTON))
     return ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
+
+
+### --- Состояния FSM ---
+class WorkoutStates(StatesGroup):
+    waiting_for_day = State()
+    waiting_for_exercise = State()
+
+
+class AddWeightStates(StatesGroup):
+    waiting_for_day = State()
+    waiting_for_exercise_choice = State()
+    waiting_for_weight = State()
+
+
+class RemoveExerciseStates(StatesGroup):
+    waiting_for_day = State()
+    waiting_for_exercise_choice = State()
 
 
 ### --- Обработчики команд ---
@@ -109,11 +127,11 @@ async def add_weight_start(message: types.Message, state: FSMContext):
 
     kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
 
-    await state.set_state(WorkoutStates.waiting_for_edit_day)
+    await state.set_state(AddWeightStates.waiting_for_day)
     await message.answer("Выберите день для добавления веса:", reply_markup=kb)
 
 
-@dp.message(WorkoutStates.waiting_for_edit_day, F.text.in_(DAYS_OF_WEEK))
+@dp.message(AddWeightStates.waiting_for_day, F.text.in_(DAYS_OF_WEEK))
 async def add_weight_day(message: types.Message, state: FSMContext):
     workout_data = load_data(message.from_user.id)
     day = message.text
@@ -139,11 +157,11 @@ async def add_weight_day(message: types.Message, state: FSMContext):
         else:
             response += f"{i}. {exercise}\n"
 
-    await state.set_state(WorkoutStates.waiting_for_edit_choice)
+    await state.set_state(AddWeightStates.waiting_for_exercise_choice)
     await message.answer(response + "\nВведите номер упражнения для добавления веса:", reply_markup=kb)
 
 
-@dp.message(WorkoutStates.waiting_for_edit_choice, F.text.regexp(r'^\d+$'))
+@dp.message(AddWeightStates.waiting_for_exercise_choice, F.text.regexp(r'^\d+$'))
 async def add_weight_exercise(message: types.Message, state: FSMContext):
     num = int(message.text)
     data = await state.get_data()
@@ -157,11 +175,11 @@ async def add_weight_exercise(message: types.Message, state: FSMContext):
         return
 
     await state.update_data(exercise_num=num - 1)
-    await state.set_state(WorkoutStates.waiting_for_weight)
+    await state.set_state(AddWeightStates.waiting_for_weight)
     await message.answer("Введите вес (в кг):", reply_markup=types.ReplyKeyboardRemove())
 
 
-@dp.message(WorkoutStates.waiting_for_weight)
+@dp.message(AddWeightStates.waiting_for_weight)
 async def add_weight_finish(message: types.Message, state: FSMContext):
     try:
         weight = float(message.text)
@@ -200,11 +218,11 @@ async def remove_exercise_start(message: types.Message, state: FSMContext):
 
     kb = ReplyKeyboardMarkup(keyboard=[buttons], resize_keyboard=True)
 
-    await state.set_state(WorkoutStates.waiting_for_edit_day)
+    await state.set_state(RemoveExerciseStates.waiting_for_day)
     await message.answer("Выберите день для удаления:", reply_markup=kb)
 
 
-@dp.message(WorkoutStates.waiting_for_edit_day)
+@dp.message(RemoveExerciseStates.waiting_for_day)
 async def remove_exercise_day(message: types.Message, state: FSMContext):
     if message.text == BACK_BUTTON:
         await state.clear()
@@ -237,11 +255,11 @@ async def remove_exercise_day(message: types.Message, state: FSMContext):
         else:
             response += f"{i}. {exercise}\n"
 
-    await state.set_state(WorkoutStates.waiting_for_edit_choice)
+    await state.set_state(RemoveExerciseStates.waiting_for_exercise_choice)
     await message.answer(response + "\nВведите номер для удаления:", reply_markup=kb)
 
 
-@dp.message(WorkoutStates.waiting_for_edit_choice)
+@dp.message(RemoveExerciseStates.waiting_for_exercise_choice)
 async def remove_exercise_finish(message: types.Message, state: FSMContext):
     if message.text == BACK_BUTTON:
         await state.clear()
